@@ -1,3 +1,5 @@
+*.factorypath
+
 activemq-data/
 .idea/
 *.iml
