@@ -18,6 +18,9 @@ import io.debezium.relational.mapping.ColumnMappers;
 import io.debezium.schema.DatabaseSchema;
 import io.debezium.schema.TopicSelector;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * A {@link DatabaseSchema} of a relational database such as Postgres. Provides information about the physical structure
  * of the database (the "database schema") as well as the structure of corresponding CDC messages (the "event schema").
@@ -35,6 +38,8 @@ public abstract class RelationalDatabaseSchema implements DatabaseSchema<TableId
     private final String schemaPrefix;
     private final SchemasByTableId schemasByTableId;
     private final Tables tables;
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RelationalDatabaseSchema.class);
 
     protected RelationalDatabaseSchema(CommonConnectorConfig config, TopicSelector<TableId> topicSelector,
             TableFilter tableFilter, Predicate<ColumnId> columnFilter, TableSchemaBuilder schemaBuilder,
@@ -113,9 +118,14 @@ public abstract class RelationalDatabaseSchema implements DatabaseSchema<TableId
      * Builds up the CDC event schema for the given table and stores it in this schema.
      */
     protected void buildAndRegisterSchema(Table table) {
+        LOGGER.debug("wangzheng: begin buildAndRegisterSchema {}", table.id());
         if (tableFilter.isIncluded(table.id())) {
             TableSchema schema = schemaBuilder.create(schemaPrefix, getEnvelopeSchemaName(table), table, columnFilter, columnMappers);
+            LOGGER.debug("wangzheng: add buildAndRegisterSchema  schema {}", schema);
             schemasByTableId.put(table.id(), schema);
+        }
+        else {
+            LOGGER.debug("wangzheng: can't buildAndRegisterSchema {}", table.id());
         }
     }
 
