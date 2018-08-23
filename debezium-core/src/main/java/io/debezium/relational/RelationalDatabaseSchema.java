@@ -160,10 +160,12 @@ public abstract class RelationalDatabaseSchema implements DatabaseSchema<TableId
         }
 
         public TableSchema get(TableId tableId) {
+            LOGGER.debug("wangzheng: TableSchema get {}", toLowerCaseIfNeeded(tableId));
             return values.get(toLowerCaseIfNeeded(tableId));
         }
 
         public TableSchema put(TableId tableId, TableSchema updated) {
+            LOGGER.debug("wangzheng: TableSchema put {}", toLowerCaseIfNeeded(tableId));
             return values.put(toLowerCaseIfNeeded(tableId), updated);
         }
 
