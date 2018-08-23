@@ -111,6 +111,8 @@ public class EventDispatcher<T extends DataCollectionId> {
         else {
             DataCollectionSchema dataCollectionSchema = schema.schemaFor(dataCollectionId);
 
+            LOGGER.debug("wangzheng: {}", schema);
+
             // TODO handle as per inconsistent schema info option
             if(dataCollectionSchema == null) {
                 throw new IllegalArgumentException("No metadata registered for captured table " + dataCollectionId);
