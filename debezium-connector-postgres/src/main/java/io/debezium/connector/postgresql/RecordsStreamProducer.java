@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -21,6 +22,7 @@ import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.postgresql.jdbc.PgConnection;
+import org.postgresql.replication.LogSequenceNumber;
 
 import io.debezium.annotation.ThreadSafe;
 import io.debezium.connector.postgresql.connection.PostgresConnection;
@@ -54,6 +56,7 @@ public class RecordsStreamProducer extends RecordsProducer {
     private final ExecutorService executorService;
     private final ReplicationConnection replicationConnection;
     private final AtomicReference<ReplicationStream> replicationStream;
+    private final AtomicBoolean cleanupExecuted = new AtomicBoolean();
     private PgConnection typeResolverConnection = null;
 
     private final Heartbeat heartbeat;
@@ -147,15 +150,21 @@ public class RecordsStreamProducer extends RecordsProducer {
         try {
             ReplicationStream replicationStream = this.replicationStream.get();
             if (replicationStream != null) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Flushing LSN to server: {}", LogSequenceNumber.valueOf(lsn));
+                }
+
                 // tell the server the point up to which we've processed data, so it can be free to recycle WAL segments
-                logger.debug("flushing offsets to server...");
                 replicationStream.flushLsn(lsn);
-            } else {
-                logger.debug("streaming has already stopped, ignoring commit callback...");
             }
-        } catch (SQLException e) {
+            else {
+                logger.debug("Streaming has already stopped, ignoring commit callback...");
+            }
+        }
+        catch (SQLException e) {
             throw new ConnectException(e);
-        } finally {
+        }
+        finally {
             previousContext.restore();
         }
     }
@@ -165,7 +174,7 @@ public class RecordsStreamProducer extends RecordsProducer {
         LoggingContext.PreviousContext previousContext = taskContext.configureLoggingContext(CONTEXT_NAME);
 
         try {
-            if (replicationStream.get() == null) {
+            if (!cleanupExecuted.compareAndSet(false, true)) {
                 logger.debug("already stopped....");
                 return;
             }
@@ -226,7 +235,7 @@ public class RecordsStreamProducer extends RecordsProducer {
         // update the source info with the coordinates for this message
         long commitTimeNs = message.getCommitTime();
         long txId = message.getTransactionId();
-        sourceInfo.update(lsn, commitTimeNs, txId);
+        sourceInfo.update(lsn, commitTimeNs, txId, tableId);
         if (logger.isDebugEnabled()) {
             logger.debug("received new message at position {}\n{}", ReplicationConnection.format(lsn), message);
         }
@@ -417,7 +426,7 @@ public class RecordsStreamProducer extends RecordsProducer {
         if (refreshSchemaIfChanged && schemaChanged(columns, table, metadataInMessage)) {
             try (final PostgresConnection connection = taskContext.createConnection()) {
                 // Refresh the schema so we get information about primary keys
-                schema().refresh(connection, tableId);
+                schema().refresh(connection, tableId, taskContext.config().skipRefreshSchemaOnMissingToastableData());
                 // Update the schema with metadata coming from decoder message
                 if (metadataInMessage) {
                     schema().refresh(tableFromFromMessage(columns, schema().tableFor(tableId)));
@@ -444,11 +453,28 @@ public class RecordsStreamProducer extends RecordsProducer {
 
     private boolean schemaChanged(List<ReplicationMessage.Column> columns, Table table, boolean metadataInMessage) {
         List<String> columnNames = table.columnNames();
-        int messagesCount = columns.size();
-        if (columnNames.size() != messagesCount) {
+        int tableColumnCount = columnNames.size();
+        int replicationColumnCount = columns.size();
+
+        boolean msgHasMissingColumns = tableColumnCount > replicationColumnCount;
+
+        if (msgHasMissingColumns && taskContext.config().skipRefreshSchemaOnMissingToastableData()) {
+            // if we are ignoring missing toastable data for the purpose of schema sync, we need to modify the
+            // hasMissingColumns boolean to account for this. If there are untoasted columns missing from the replication
+            // message, we'll still have missing columns and thus require a schema refresh. However, we can /possibly/
+            // avoid the refresh if there are only toastable columns missing from the message.
+            msgHasMissingColumns = hasMissingUntoastedColumns(table, columns);
+        }
+
+        boolean msgHasAdditionalColumns = tableColumnCount < replicationColumnCount;
+
+        if (msgHasMissingColumns || msgHasAdditionalColumns) {
             // the table metadata has less or more columns than the event, which means the table structure has changed,
             // so we need to trigger a refresh...
-           return true;
+            logger.info("Different column count {} present in the server message as schema in memory contains {}; refreshing table schema",
+                        replicationColumnCount,
+                        tableColumnCount);
+            return true;
         }
 
         // go through the list of columns from the message to figure out if any of them are new or have changed their type based
@@ -459,7 +485,8 @@ public class RecordsStreamProducer extends RecordsProducer {
             if (column == null) {
                 logger.info("found new column '{}' present in the server message which is not part of the table metadata; refreshing table schema", columnName);
                 return true;
-            } else {
+            }
+            else {
                 final int localType = column.nativeType();
                 final int incomingType = message.getType().getOid();
                 if (localType != incomingType) {
@@ -488,6 +515,28 @@ public class RecordsStreamProducer extends RecordsProducer {
         }).findFirst().isPresent();
     }
 
+    private boolean hasMissingUntoastedColumns(Table table, List<ReplicationMessage.Column> columns) {
+        List<String> msgColumnNames = columns.stream()
+                .map(ReplicationMessage.Column::getName)
+                .collect(Collectors.toList());
+
+        // Compute list of table columns not present in the replication message
+        List<String> missingColumnNames = table.columnNames()
+                .stream()
+                .filter(name -> !msgColumnNames.contains(name))
+                .collect(Collectors.toList());
+
+        List<String> toastableColumns = schema().getToastableColumnsForTableId(table.id());
+
+        logger.debug("msg columns: '{}' --- missing columns: '{}' --- toastableColumns: '{}",
+                     String.join(",", msgColumnNames),
+                     String.join(",", missingColumnNames),
+                     String.join(",", toastableColumns));
+        // Return `true` if we have some columns not in the replication message that are not toastable or that we do
+        // not recognize
+        return !toastableColumns.containsAll(missingColumnNames);
+    }
+
     private TableSchema tableSchemaFor(TableId tableId) throws SQLException {
         PostgresSchema schema = schema();
         if (schema.isFilteredOut(tableId)) {
@@ -501,7 +550,7 @@ public class RecordsStreamProducer extends RecordsProducer {
         // we don't have a schema registered for this table, even though the filters would allow it...
         // which means that is a newly created table; so refresh our schema to get the definition for this table
         try (final PostgresConnection connection = taskContext.createConnection()) {
-            schema.refresh(connection, tableId);
+            schema.refresh(connection, tableId, taskContext.config().skipRefreshSchemaOnMissingToastableData());
         }
         tableSchema = schema.schemaFor(tableId);
         if (tableSchema == null) {

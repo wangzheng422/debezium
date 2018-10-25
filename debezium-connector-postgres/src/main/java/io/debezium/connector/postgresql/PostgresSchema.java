@@ -6,11 +6,17 @@
 
 package io.debezium.connector.postgresql;
 
+import java.nio.charset.Charset;
 import java.sql.SQLException;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,26 +48,28 @@ public class PostgresSchema extends RelationalDatabaseSchema {
 
     private final Filters filters;
 
-    private Map<String, Integer> typeInfo;
     private final TypeRegistry typeRegistry;
+
+    private final Map<TableId, List<String>> tableIdToToastableColumns;
 
     /**
      * Create a schema component given the supplied {@link PostgresConnectorConfig Postgres connector configuration}.
      *
      * @param config the connector configuration, which is presumed to be valid
      */
-    protected PostgresSchema(PostgresConnectorConfig config, TypeRegistry typeRegistry,
+    protected PostgresSchema(PostgresConnectorConfig config, TypeRegistry typeRegistry, Charset databaseCharset,
             TopicSelector<TableId> topicSelector) {
         super(config, topicSelector, new Filters(config).tableFilter(),
-                new Filters(config).columnFilter(), getTableSchemaBuilder(config, typeRegistry), false);
+                new Filters(config).columnFilter(), getTableSchemaBuilder(config, typeRegistry, databaseCharset), false);
 
         this.filters = new Filters(config);
         this.typeRegistry = typeRegistry;
+        this.tableIdToToastableColumns = new HashMap<>();
     }
 
-    private static TableSchemaBuilder getTableSchemaBuilder(PostgresConnectorConfig config, TypeRegistry typeRegistry) {
-        PostgresValueConverter valueConverter = new PostgresValueConverter(config.decimalHandlingMode(), config.temporalPrecisionMode(),
-                ZoneOffset.UTC, null, config.includeUnknownDatatypes(), typeRegistry);
+    private static TableSchemaBuilder getTableSchemaBuilder(PostgresConnectorConfig config, TypeRegistry typeRegistry, Charset databaseCharset) {
+        PostgresValueConverter valueConverter = new PostgresValueConverter(databaseCharset, config.decimalHandlingMode(), config.temporalPrecisionMode(),
+                ZoneOffset.UTC, null, config.includeUnknownDatatypes(), typeRegistry, config.hStoreHandlingMode());
 
         return new TableSchemaBuilder(valueConverter, SchemaNameAdjuster.create(LOGGER), SourceInfo.SCHEMA);
     }
@@ -75,10 +83,6 @@ public class PostgresSchema extends RelationalDatabaseSchema {
      * @throws SQLException if there is a problem obtaining the schema from the database server
      */
     protected PostgresSchema refresh(PostgresConnection connection, boolean printReplicaIdentityInfo) throws SQLException {
-        if (typeInfo == null) {
-            typeInfo = connection.readTypeInfo();
-        }
-
         // read all the information from the DB
         connection.readSchema(tables(), null, null, filters.tableFilter(), null, true);
         if (printReplicaIdentityInfo) {
@@ -104,9 +108,10 @@ public class PostgresSchema extends RelationalDatabaseSchema {
      *
      * @param connection a {@link JdbcConnection} instance, never {@code null}
      * @param tableId the table identifier; may not be null
+     * @param refreshToastableColumns refreshes the cache of toastable columns for `tableId`, if {@code true}
      * @throws SQLException if there is a problem refreshing the schema from the database server
      */
-    protected void refresh(PostgresConnection connection, TableId tableId) throws SQLException {
+    protected void refresh(PostgresConnection connection, TableId tableId, boolean refreshToastableColumns) throws SQLException {
         Tables temp = new Tables();
         connection.readSchema(temp, null, null, tableId::equals, null, true);
 
@@ -114,8 +119,13 @@ public class PostgresSchema extends RelationalDatabaseSchema {
         assert temp.size() == 1;
         // overwrite (add or update) or views of the tables
         tables().overwriteTable(temp.forTable(tableId));
-        // and refresh the schema
+        // refresh the schema
         refreshSchema(tableId);
+
+        if (refreshToastableColumns) {
+            // and refresh toastable columns info
+            refreshToastableColumnsMap(connection, tableId);
+        }
     }
 
     /**
@@ -153,6 +163,54 @@ public class PostgresSchema extends RelationalDatabaseSchema {
         buildAndRegisterSchema(table);
     }
 
+    private void refreshToastableColumnsMap(PostgresConnection connection, TableId tableId) {
+        // This method populates the list of 'toastable' columns for `tableId`.
+        // A toastable column is one that has storage strategy 'x' (inline-compressible + secondary storage enabled),
+        // 'e' (secondary storage enabled), or 'm' (inline-compressible).
+        //
+        // Note that, rather confusingly, the 'm' storage strategy does in fact permit secondary storage, but only as a
+        // last resort.
+        //
+        // Also, we cannot account for the possibility that future versions of PostgreSQL introduce new storage strategies
+        // that include secondary storage. We should move to native decoding in PG 10 and get rid of this hacky code
+        // before that possibility is realized.
+
+        // Collect the non-system (attnum > 0), present (not attisdropped) column names that are toastable.
+        //
+        // NOTE (Ian Axelrod):
+        // I Would prefer to use data provided by PgDatabaseMetaData, but the PG JDBC driver does not expose storage type
+        // information. Thus, we need to make a separate query. If we are refreshing schemas rarely, this is not a big
+        // deal.
+        List<String> toastableColumns = new ArrayList<>();
+        String relName = tableId.table();
+        String schema = tableId.schema() != null && tableId.schema().length() > 0 ? tableId.schema() : "public";
+        String statement = "select att.attname" +
+                " from pg_attribute att " +
+                " join pg_class tbl on tbl.oid = att.attrelid" +
+                " join pg_namespace ns on tbl.relnamespace = ns.oid" +
+                " where tbl.relname = ?" +
+                " and ns.nspname = ?" +
+                " and att.attnum > 0" +
+                " and att.attstorage in ('x', 'e', 'm')" +
+                " and not att.attisdropped;";
+
+        try {
+            connection.prepareQuery(statement, stmt -> {
+                stmt.setString(1, relName);
+                stmt.setString(2, schema);
+            }, rs -> {
+                while (rs.next()) {
+                    toastableColumns.add(rs.getString(1));
+                }
+            });
+        }
+        catch (SQLException e) {
+            throw new ConnectException("Unable to refresh toastable columns mapping", e);
+        }
+
+        tableIdToToastableColumns.put(tableId, Collections.unmodifiableList(toastableColumns));
+    }
+
     protected static TableId parse(String table) {
         TableId tableId = TableId.parse(table, false);
         if (tableId == null) {
@@ -163,5 +221,9 @@ public class PostgresSchema extends RelationalDatabaseSchema {
 
     public TypeRegistry getTypeRegistry() {
         return typeRegistry;
+    }
+
+    public List<String> getToastableColumnsForTableId(TableId tableId) {
+        return tableIdToToastableColumns.getOrDefault(tableId, Collections.emptyList());
     }
 }

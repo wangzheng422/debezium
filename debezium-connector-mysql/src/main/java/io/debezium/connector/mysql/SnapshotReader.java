@@ -38,6 +38,7 @@ import org.apache.kafka.connect.source.SourceRecord;
 import io.debezium.connector.mysql.RecordMakers.RecordsForTable;
 import io.debezium.function.BufferedBlockingConsumer;
 import io.debezium.function.Predicates;
+import io.debezium.heartbeat.Heartbeat;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.jdbc.JdbcConnection.StatementFactory;
 import io.debezium.relational.Column;
@@ -683,6 +684,13 @@ public class SnapshotReader extends AbstractReader {
                     // Mark the source as having completed the snapshot. This will ensure the `source` field on records
                     // are not denoted as a snapshot ...
                     source.completeSnapshot();
+                    Heartbeat
+                        .create(
+                                context.config(),
+                                context.topicSelector().getHeartbeatTopic(),
+                                context.getConnectorConfig().getLogicalName()
+                        )
+                        .forcedBeat(source.partition(), source.offset(), this::enqueueRecord);
                 } finally {
                     // Set the completion flag ...
                     completeSuccessfully();
@@ -691,6 +699,21 @@ public class SnapshotReader extends AbstractReader {
                 }
             }
         } catch (Throwable e) {
+            if (isLocked) {
+                try {
+                    sql.set("UNLOCK TABLES");
+                    mysql.execute(sql.get());
+                }
+                catch (Exception eUnlock) {
+                    logger.error("Removing of table locks not completed successfully", eUnlock);
+                }
+                try {
+                    mysql.connection().rollback();
+                }
+                catch (Exception eRollback) {
+                    logger.error("Execption while rollback is executed", eRollback);
+                }
+            }
             failed(e, "Aborting snapshot due to error when last running '" + sql.get() + "': " + e.getMessage());
         }
     }

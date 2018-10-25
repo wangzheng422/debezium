@@ -15,6 +15,8 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.util.regex.Pattern;
 
 import io.debezium.annotation.Immutable;
@@ -31,9 +33,10 @@ import io.debezium.relational.Column;
 @Immutable
 public class MySqlDefaultValuePreConverter  {
 
-    private static final Pattern ALL_ZERO_TIMESTAMP = Pattern.compile("0000-00-00 00:00:00(\\.\\d{1,6})?");
 
-    private static final String ALL_ZERO_DATE = "0000-00-00";
+    private static final Pattern EPOCH_EQUIVALENT_TIMESTAMP = Pattern.compile("(\\d{4}-\\d{2}-00|\\d{4}-00-\\d{2}|0000-\\d{2}-\\d{2}) (00:00:00(\\.\\d{1,6})?)");
+
+    private static final Pattern EPOCH_EQUIVALENT_DATE = Pattern.compile("\\d{4}-\\d{2}-00|\\d{4}-00-\\d{2}|0000-\\d{2}-\\d{2}");
 
     private static final String EPOCH_TIMESTAMP = "1970-01-01 00:00:00";
 
@@ -95,10 +98,11 @@ public class MySqlDefaultValuePreConverter  {
      * @return the converted value;
      */
     private Object convertToLocalDate(Column column, String value) {
-        if (ALL_ZERO_DATE.equals(value) && column.isOptional()) {
+        final boolean zero = EPOCH_EQUIVALENT_DATE.matcher(value).matches() || "0".equals(value);
+        if (zero && column.isOptional()) {
             return null;
         }
-        if (ALL_ZERO_DATE.equals(value)) {
+        if (zero) {
             value = EPOCH_DATE;
         }
         return LocalDate.from(DateTimeFormatter.ISO_LOCAL_DATE.parse(value));
@@ -114,25 +118,16 @@ public class MySqlDefaultValuePreConverter  {
      * @return the converted value;
      */
     private Object convertToLocalDateTime(Column column, String value) {
-        final boolean matches = ALL_ZERO_TIMESTAMP.matcher(value).matches();
+        final boolean matches = EPOCH_EQUIVALENT_TIMESTAMP.matcher(value).matches() || "0".equals(value);
         if (matches) {
             if (column.isOptional()) {
                 return null;
             }
 
             value = EPOCH_TIMESTAMP;
-            // Align fraction zeros according to the database schema
-            if (column.length() > 0) {
-                final StringBuilder sb = new StringBuilder(EPOCH_TIMESTAMP).append('.');
-                for (int i = 0; i < column.length(); i++) {
-                    sb.append('0');
-                }
-                value = sb.toString();
-            }
         }
 
-        final String timestampFormat = timestampFormat(column.length());
-        return LocalDateTime.from(DateTimeFormatter.ofPattern(timestampFormat).parse(value));
+        return LocalDateTime.from(timestampFormat(column.length()).parse(value));
     }
 
     /**
@@ -145,7 +140,7 @@ public class MySqlDefaultValuePreConverter  {
      * @return the converted value;
      */
     private Object convertToTimestamp(Column column, String value) {
-        final boolean matches = ALL_ZERO_TIMESTAMP.matcher(value).matches() || EPOCH_TIMESTAMP.equals(value);
+        final boolean matches = EPOCH_EQUIVALENT_TIMESTAMP.matcher(value).matches() || "0".equals(value) || EPOCH_TIMESTAMP.equals(value);
         if (matches) {
             if (column.isOptional()) {
                 return null;
@@ -164,8 +159,7 @@ public class MySqlDefaultValuePreConverter  {
      * @return the converted value;
      */
     private Object convertToDuration(Column column, String value) {
-        String timeFormat = timeFormat(column.length());
-        return Duration.between(LocalTime.MIN, LocalTime.from(DateTimeFormatter.ofPattern(timeFormat).parse(value)));
+        return Duration.between(LocalTime.MIN, LocalTime.from(timeFormat(column.length()).parse(value)));
     }
 
     /**
@@ -266,29 +260,21 @@ public class MySqlDefaultValuePreConverter  {
         }
     }
 
-    private String timeFormat(int length) {
-        String defaultFormat = "HH:mm:ss";
-        if (length <= 0) {
-            return defaultFormat;
+    private DateTimeFormatter timeFormat(int length) {
+        final DateTimeFormatterBuilder dtf = new DateTimeFormatterBuilder()
+                .appendPattern("HH:mm:ss");
+        if (length !=-1) {
+            dtf.appendFraction(ChronoField.MICRO_OF_SECOND, 0, length, true);
         }
-        StringBuilder format = new StringBuilder(defaultFormat);
-        format.append(".");
-        for (int i = 0; i < length; i++) {
-            format.append("S");
-        }
-        return format.toString();
+        return dtf.toFormatter();
     }
 
-    private String timestampFormat(int length) {
-        String defaultFormat = "yyyy-MM-dd HH:mm:ss";
-        if (length <= 0) {
-            return defaultFormat;
+    private DateTimeFormatter timestampFormat(int length) {
+        final DateTimeFormatterBuilder dtf = new DateTimeFormatterBuilder()
+                .appendPattern("yyyy-MM-dd HH:mm:ss");
+        if (length !=-1) {
+            dtf.appendFraction(ChronoField.MICRO_OF_SECOND, 0, length, true);
         }
-        StringBuilder format = new StringBuilder(defaultFormat);
-        format.append(".");
-        for (int i = 0; i < length; i++) {
-            format.append("S");
-        }
-        return format.toString();
+        return dtf.toFormatter();
     }
 }

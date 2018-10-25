@@ -8,6 +8,7 @@ package io.debezium.connector.postgresql;
 
 import static io.debezium.connector.postgresql.TestHelper.PK_FIELD;
 import static io.debezium.connector.postgresql.TestHelper.topicName;
+import static org.fest.assertions.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
@@ -26,6 +27,7 @@ import io.debezium.connector.postgresql.PostgresConnectorConfig.DecimalHandlingM
 import io.debezium.data.Envelope;
 import io.debezium.data.VerifyRecord;
 import io.debezium.doc.FixFor;
+import io.debezium.heartbeat.Heartbeat;
 import io.debezium.jdbc.TemporalPrecisionMode;
 import io.debezium.relational.TableId;
 import io.debezium.schema.TopicSelector;
@@ -52,7 +54,7 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         TopicSelector<TableId> selector = PostgresTopicSelector.create(config);
         context = new PostgresTaskContext(
                 config,
-                new PostgresSchema(config, TestHelper.getTypeRegistry(), selector),
+                TestHelper.getSchema(config),
                 selector
         );
     }
@@ -66,9 +68,9 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
 
     @Test
     public void shouldGenerateSnapshotsForDefaultDatatypes() throws Exception {
-        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER), false);
+        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER, TestHelper.TEST_DATABASE), false);
 
-        TestConsumer consumer = testConsumer(ALL_STMTS.size(), "public", "Quoted_\"");
+        TestConsumer consumer = testConsumer(ALL_STMTS.size(), "public", "Quoted__");
 
         //insert data for each of different supported types
         String statementsBuilder = ALL_STMTS.stream().collect(Collectors.joining(";" + System.lineSeparator())) + ";";
@@ -78,13 +80,14 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         snapshotProducer.start(consumer, e -> {});
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
 
-        Map<String, List<SchemaAndValueField>> expectedValuesByTableName = super.schemaAndValuesByTableName();
-        consumer.process(record -> assertReadRecord(record, expectedValuesByTableName));
+        Map<String, List<SchemaAndValueField>> expectedValuesByTopicName = super.schemaAndValuesByTopicName();
+        consumer.process(record -> assertReadRecord(record, expectedValuesByTopicName));
 
         // check the offset information for each record
         while (!consumer.isEmpty()) {
             SourceRecord record = consumer.remove();
             assertRecordOffset(record, true, consumer.isEmpty());
+            assertSourceInfo(record);
         }
     }
 
@@ -98,7 +101,7 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         TopicSelector<TableId> selector = PostgresTopicSelector.create(config);
         context = new PostgresTaskContext(
                 config,
-                new PostgresSchema(config, TestHelper.getTypeRegistry(), selector),
+                TestHelper.getSchema(config),
                 selector
         );
 
@@ -112,7 +115,7 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
                             insertStmt;
         TestHelper.execute(statements);
 
-        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER), true);
+        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER, TestHelper.TEST_DATABASE), true);
         TestConsumer consumer = testConsumer(2, "s1", "s2");
         snapshotProducer.start(consumer, e -> {});
 
@@ -129,11 +132,13 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         VerifyRecord.isValidInsert(first, PK_FIELD, 2);
         assertEquals(topicName("s1.a"), first.topic());
         assertRecordOffset(first, false, false);
+        assertSourceInfo(first, "test_database", "s1", "a");
 
         SourceRecord second = consumer.remove();
         VerifyRecord.isValidInsert(second, PK_FIELD, 2);
         assertEquals(topicName("s2.a"), second.topic());
         assertRecordOffset(second, false, false);
+        assertSourceInfo(second, "test_database", "s2", "a");
 
         // now shut down the producers and insert some more records
         snapshotProducer.stop();
@@ -142,7 +147,7 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         // start a new producer back up, take a new snapshot (we expect all the records to be read back)
         int expectedRecordsCount = 6;
         consumer = testConsumer(expectedRecordsCount, "s1", "s2");
-        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER), true);
+        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER, TestHelper.TEST_DATABASE), true);
         snapshotProducer.start(consumer, e -> {});
         consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
 
@@ -152,6 +157,7 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
             int expectedPk = (counterVal % 3) + 1; //each table has 3 entries keyed 1-3
             VerifyRecord.isValidRead(record, PK_FIELD, expectedPk);
             assertRecordOffset(record, true, counterVal == (expectedRecordsCount - 1));
+            assertSourceInfo(record);
         });
         consumer.clear();
 
@@ -163,18 +169,60 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         first = consumer.remove();
         VerifyRecord.isValidInsert(first, PK_FIELD, 4);
         assertRecordOffset(first, false, false);
+        assertSourceInfo(first, "test_database", "s1", "a");
 
         second = consumer.remove();
         VerifyRecord.isValidInsert(second, PK_FIELD, 4);
         assertRecordOffset(second, false, false);
+        assertSourceInfo(second, "test_database", "s2", "a");
     }
 
-    private void assertReadRecord(SourceRecord record, Map<String, List<SchemaAndValueField>> expectedValuesByTableName) {
+    @Test
+    @FixFor("DBZ-859")
+    public void shouldGenerateSnapshotAndSendHeartBeat() throws Exception {
+        // PostGIS must not be used
+        TestHelper.dropAllSchemas();
+        TestHelper.execute("CREATE TABLE t1 (pk SERIAL, aa integer, PRIMARY KEY(pk)); INSERT INTO t1 VALUES (default, 11)");
+
+        PostgresConnectorConfig config = new PostgresConnectorConfig(
+                TestHelper.defaultConfig()
+                    .with(PostgresConnectorConfig.SNAPSHOT_MODE, PostgresConnectorConfig.SnapshotMode.INITIAL)
+                    .with(PostgresConnectorConfig.INCLUDE_SCHEMA_CHANGES, true)
+                    .with(Heartbeat.HEARTBEAT_INTERVAL, 300_000)
+                    .build()
+        );
+        TopicSelector<TableId> selector = PostgresTopicSelector.create(config);
+        context = new PostgresTaskContext(
+                config,
+                TestHelper.getSchema(config),
+                selector
+        );
+
+        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER, TestHelper.TEST_DATABASE), true);
+        TestConsumer consumer = testConsumer(2);
+        snapshotProducer.start(consumer, e -> {});
+
+        // Make sure we get the table schema record and heartbeat record
+        consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
+
+        final SourceRecord first = consumer.remove();
+        VerifyRecord.isValidRead(first, PK_FIELD, 1);
+        assertRecordOffset(first, true, true);
+
+        final SourceRecord second = consumer.remove();
+        assertThat(second.topic()).startsWith("__debezium-heartbeat");
+        assertRecordOffset(second, false, false);
+
+        // now shut down the producers and insert some more records
+        snapshotProducer.stop();
+    }
+
+    private void assertReadRecord(SourceRecord record, Map<String, List<SchemaAndValueField>> expectedValuesByTopicName) {
         VerifyRecord.isValidRead(record, PK_FIELD, 1);
-        String tableName = record.topic().replace(TestHelper.TEST_SERVER + ".", "");
-        List<SchemaAndValueField> expectedValuesAndSchemasForTable = expectedValuesByTableName.get(tableName);
-        assertNotNull("No expected values for " + tableName + " found", expectedValuesAndSchemasForTable);
-        assertRecordSchemaAndValues(expectedValuesAndSchemasForTable, record, Envelope.FieldName.AFTER);
+        String topicName = record.topic().replace(TestHelper.TEST_SERVER + ".", "");
+        List<SchemaAndValueField> expectedValuesAndSchemasForTopic = expectedValuesByTopicName.get(topicName);
+        assertNotNull("No expected values for " + topicName + " found", expectedValuesAndSchemasForTopic);
+        assertRecordSchemaAndValues(expectedValuesAndSchemasForTopic, record, Envelope.FieldName.AFTER);
     }
 
     @Test
@@ -188,13 +236,13 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         TopicSelector<TableId> selector = PostgresTopicSelector.create(config);
         context = new PostgresTaskContext(
                 config,
-                new PostgresSchema(config, TestHelper.getTypeRegistry(), selector),
+                TestHelper.getSchema(config),
                 selector
         );
 
-        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER), false);
+        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER, TestHelper.TEST_DATABASE), false);
 
-        TestConsumer consumer = testConsumer(ALL_STMTS.size(), "public", "Quoted_\"");
+        TestConsumer consumer = testConsumer(ALL_STMTS.size(), "public", "Quoted__");
 
         //insert data for each of different supported types
         String statementsBuilder = ALL_STMTS.stream().collect(Collectors.joining(";" + System.lineSeparator())) + ";";
@@ -204,13 +252,14 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         snapshotProducer.start(consumer, e -> {});
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
 
-        Map<String, List<SchemaAndValueField>> expectedValuesByTableName = super.schemaAndValuesByTableNameAdaptiveTimeMicroseconds();
-        consumer.process(record -> assertReadRecord(record, expectedValuesByTableName));
+        Map<String, List<SchemaAndValueField>> expectedValuesByTopicName = super.schemaAndValuesByTopicNameAdaptiveTimeMicroseconds();
+        consumer.process(record -> assertReadRecord(record, expectedValuesByTopicName));
 
         // check the offset information for each record
         while (!consumer.isEmpty()) {
             SourceRecord record = consumer.remove();
             assertRecordOffset(record, true, consumer.isEmpty());
+            assertSourceInfo(record);
         }
     }
 
@@ -229,11 +278,11 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         TopicSelector<TableId> selector = PostgresTopicSelector.create(config);
         context = new PostgresTaskContext(
                 config,
-                new PostgresSchema(config, TestHelper.getTypeRegistry(), selector),
+                TestHelper.getSchema(config),
                 selector
         );
 
-        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER), false);
+        snapshotProducer = new RecordsSnapshotProducer(context, new SourceInfo(TestHelper.TEST_SERVER, TestHelper.TEST_DATABASE), false);
 
         TestConsumer consumer = testConsumer(1, "public", "Quoted_\"");
 
@@ -244,13 +293,14 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         snapshotProducer.start(consumer, e -> {});
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
 
-        Map<String, List<SchemaAndValueField>> expectedValuesByTableName = super.schemaAndValuesByTableNameStringEncodedDecimals();
-        consumer.process(record -> assertReadRecord(record, expectedValuesByTableName));
+        Map<String, List<SchemaAndValueField>> expectedValuesByTopicName = super.schemaAndValuesByTopicNameStringEncodedDecimals();
+        consumer.process(record -> assertReadRecord(record, expectedValuesByTopicName));
 
         // check the offset information for each record
         while (!consumer.isEmpty()) {
             SourceRecord record = consumer.remove();
             assertRecordOffset(record, true, consumer.isEmpty());
+            assertSourceInfo(record);
         }
     }
 }

@@ -9,6 +9,7 @@ package io.debezium.connector.postgresql;
 import static org.junit.Assert.assertNotNull;
 
 import java.net.URL;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.sql.Connection;
@@ -31,6 +32,7 @@ import io.debezium.jdbc.JdbcConfiguration;
 public final class TestHelper {
 
     protected static final String TEST_SERVER = "test_server";
+    protected static final String TEST_DATABASE = "test_database";
     protected static final String PK_FIELD = "pk";
     private static final String TEST_PROPERTY_PREFIX = "debezium.test.";
 
@@ -88,6 +90,17 @@ public final class TestHelper {
     }
 
     /**
+     * Obtain a DB connection with a custom application name.
+     *
+     * @param appName the name of the application used for PostgreSQL diagnostics
+     *
+     * @return the PostgresConnection instance; never null
+     */
+    public static PostgresConnection create(String appName) {
+        return new PostgresConnection(defaultJdbcConfig().edit().with("ApplicationName", appName).build());
+    }
+
+    /**
      * Executes a JDBC statement using the default jdbc config without autocommitting the connection
      *
      * @param statement an array of statement
@@ -135,6 +148,19 @@ public final class TestHelper {
         try (final PostgresConnection connection = new PostgresConnection(defaultJdbcConfig())) {
             return connection.getTypeRegistry();
         }
+    }
+
+    public static PostgresSchema getSchema(PostgresConnectorConfig config) {
+        return getSchema(config, TestHelper.getTypeRegistry());
+    }
+
+    public static PostgresSchema getSchema(PostgresConnectorConfig config, TypeRegistry typeRegistry) {
+        return new PostgresSchema(
+                config,
+                typeRegistry,
+                Charset.forName("UTF-8"),
+                PostgresTopicSelector.create(config)
+        );
     }
 
     protected static Set<String> schemaNames() throws SQLException {

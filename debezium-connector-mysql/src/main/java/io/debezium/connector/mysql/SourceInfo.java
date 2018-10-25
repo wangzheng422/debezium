@@ -297,6 +297,11 @@ final class SourceInfo extends AbstractSourceInfo {
         return SCHEMA;
     }
 
+    @Override
+    protected String connector() {
+        return Module.name();
+    }
+
     /**
      * Get a {@link Struct} representation of the source {@link #partition()} and {@link #offset()} information. The Struct
      * complies with the {@link #SCHEMA} for the MySQL connector.

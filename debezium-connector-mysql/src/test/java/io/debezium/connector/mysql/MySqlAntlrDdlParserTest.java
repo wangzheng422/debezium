@@ -6,20 +6,26 @@
 
 package io.debezium.connector.mysql;
 
-import io.debezium.connector.mysql.antlr.MySqlAntlrDdlParser;
-import io.debezium.relational.Table;
-import io.debezium.relational.TableId;
-import io.debezium.relational.Tables;
-import io.debezium.relational.ddl.DdlChanges;
-import io.debezium.relational.ddl.SimpleDdlParserListener;
-import io.debezium.util.Strings;
-import io.debezium.util.Testing;
-import org.junit.Test;
+import static org.fest.assertions.Assertions.assertThat;
 
 import java.sql.Types;
 import java.util.List;
 
-import static org.fest.assertions.Assertions.assertThat;
+import org.junit.Test;
+
+import io.debezium.connector.mysql.antlr.MySqlAntlrDdlParser;
+import io.debezium.doc.FixFor;
+import io.debezium.jdbc.JdbcValueConverters;
+import io.debezium.jdbc.TemporalPrecisionMode;
+import io.debezium.relational.Column;
+import io.debezium.relational.Table;
+import io.debezium.relational.TableId;
+import io.debezium.relational.Tables;
+import io.debezium.relational.Tables.TableFilter;
+import io.debezium.relational.ddl.DdlChanges;
+import io.debezium.relational.ddl.SimpleDdlParserListener;
+import io.debezium.util.Strings;
+import io.debezium.util.Testing;
 
 /**
  * @author Roman Kuchár <kucharrom@gmail.com>.
@@ -241,6 +247,83 @@ public class MySqlAntlrDdlParserTest extends MySqlDdlParserTest {
         assertColumn(foo, "c2", "VARCHAR", Types.VARCHAR, 22, -1, true, false, false);
     }
 
+    @Test
+    public void shouldUseFiltersForAlterTable() {
+        parser = new MysqlDdlParserWithSimpleTestListener(listener, TableFilter.fromPredicate(x -> !x.table().contains("ignored")));
+
+        final String ddl = "CREATE TABLE ok (id int primary key, val smallint);" + System.lineSeparator()
+                + "ALTER TABLE ignored ADD COLUMN(x tinyint)" + System.lineSeparator()
+                + "ALTER TABLE ok ADD COLUMN(y tinyint)";
+        parser.parse(ddl, tables);
+        assertThat(((MysqlDdlParserWithSimpleTestListener)parser).getParsingExceptionsFromWalker()).isEmpty();
+        assertThat(tables.size()).isEqualTo(1);
+
+        final Table t1 = tables.forTable(null, null, "ok");
+        assertThat(t1.columns()).hasSize(3);
+
+        final Column c1 = t1.columns().get(0);
+        final Column c2 = t1.columns().get(1);
+        final Column c3 = t1.columns().get(2);
+        assertThat(c1.name()).isEqualTo("id");
+        assertThat(c1.typeName()).isEqualTo("INT");
+        assertThat(c2.name()).isEqualTo("val");
+        assertThat(c2.typeName()).isEqualTo("SMALLINT");
+        assertThat(c3.name()).isEqualTo("y");
+        assertThat(c3.typeName()).isEqualTo("TINYINT");
+    }
+
+    @Test
+    @FixFor("DBZ-903")
+    public void shouldParseFunctionNamedDatabase() {
+        parser = new MysqlDdlParserWithSimpleTestListener(listener, TableFilter.fromPredicate(x -> !x.table().contains("ignored")));
+
+        final String ddl = "SELECT `table_name` FROM `information_schema`.`TABLES` WHERE `table_schema` = DATABASE()";
+        parser.parse(ddl, tables);
+    }
+
+    @Test
+    @FixFor("DBZ-910")
+    public void shouldParseConstraintCheck() {
+        parser = new MysqlDdlParserWithSimpleTestListener(listener, true);
+
+        final String ddl =
+                "CREATE TABLE t1 (c1 INTEGER NOT NULL,c2 VARCHAR(22),CHECK (c2 IN ('A', 'B', 'C')));"
+              + "CREATE TABLE t2 (c1 INTEGER NOT NULL,c2 VARCHAR(22),CONSTRAINT c1 CHECK (c2 IN ('A', 'B', 'C')));"
+              + "CREATE TABLE t3 (c1 INTEGER NOT NULL,c2 VARCHAR(22),CONSTRAINT CHECK (c2 IN ('A', 'B', 'C')));"
+              + "ALTER TABLE t1 ADD CONSTRAINT CHECK (c1 IN (1, 2, 3, 4));"
+              + "ALTER TABLE t1 ADD CONSTRAINT c2 CHECK (c1 IN (1, 2, 3, 4))"
+              + "ALTER TABLE t1 ADD CHECK (c1 IN (1, 2, 3, 4))";
+        parser.parse(ddl, tables);
+        assertThat(tables.size()).isEqualTo(3);
+
+        assertThat(tables.forTable(null, null, "t1").columns()).hasSize(2);
+        assertThat(tables.forTable(null, null, "t2").columns()).hasSize(2);
+        assertThat(tables.forTable(null, null, "t3").columns()).hasSize(2);
+    }
+
+    @Test
+    @FixFor("DBZ-780")
+    public void shouldRenameColumnWithoutDefinition() {
+        parser = new MysqlDdlParserWithSimpleTestListener(listener, TableFilter.fromPredicate(x -> !x.table().contains("ignored")));
+
+        final String ddl = "CREATE TABLE foo (id int primary key, old INT);" + System.lineSeparator()
+                + "ALTER TABLE foo RENAME COLUMN old to new ";
+        parser.parse(ddl, tables);
+        assertThat(((MysqlDdlParserWithSimpleTestListener)parser).getParsingExceptionsFromWalker()).isEmpty();
+        assertThat(tables.size()).isEqualTo(1);
+
+        final Table t1 = tables.forTable(null, null, "foo");
+        assertThat(t1.columns()).hasSize(2);
+
+        final Column c1 = t1.columns().get(0);
+        final Column c2 = t1.columns().get(1);
+        assertThat(c1.name()).isEqualTo("id");
+        assertThat(c1.typeName()).isEqualTo("INT");
+        assertThat(c2.name()).isEqualTo("new");
+        assertThat(c2.typeName()).isEqualTo("INT");
+    }
+
+    @Override
     protected void assertParseEnumAndSetOptions(String typeExpression, String optionString) {
         List<String> options = MySqlAntlrDdlParser.parseSetAndEnumOptions(typeExpression);
         String commaSeperatedOptions = Strings.join(",", options);
@@ -248,12 +331,28 @@ public class MySqlAntlrDdlParserTest extends MySqlDdlParserTest {
     }
 
     class MysqlDdlParserWithSimpleTestListener extends MySqlAntlrDdlParser {
+
         public MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener) {
             this(changesListener, false);
         }
 
+        public MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, TableFilter tableFilter) {
+            this(changesListener, false, tableFilter);
+        }
+
         public MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, boolean includeViews) {
-            super(false, includeViews, null);
+            this(changesListener, includeViews, TableFilter.includeAll());
+        }
+
+        private MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, boolean includeViews, TableFilter tableFilter) {
+            super(false,
+                    includeViews,
+                    new MySqlValueConverters(
+                        JdbcValueConverters.DecimalMode.DOUBLE,
+                        TemporalPrecisionMode.ADAPTIVE,
+                        JdbcValueConverters.BigIntUnsignedMode.PRECISE
+                    ),
+                    tableFilter);
             this.ddlChanges = changesListener;
         }
     }

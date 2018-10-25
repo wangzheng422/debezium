@@ -173,4 +173,8 @@ public abstract class RelationalDatabaseSchema implements DatabaseSchema<TableId
             return tableIdCaseInsensitive ? tableId.toLowercase() : tableId;
         }
     }
+
+    protected TableFilter getTableFilter() {
+        return tableFilter;
+    }
 }

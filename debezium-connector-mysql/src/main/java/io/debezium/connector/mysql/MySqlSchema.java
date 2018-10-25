@@ -77,7 +77,7 @@ public class MySqlSchema extends RelationalDatabaseSchema {
     /**
      * Create a schema component given the supplied {@link MySqlConnectorConfig MySQL connector configuration}.
      *
-     * @param config the connector configuration, which is presumed to be valid
+     * @param configuration the connector configuration, which is presumed to be valid
      * @param gtidFilter the predicate function that should be applied to GTID sets in database history, and which
      *          returns {@code true} if a GTID source is to be included, or {@code false} if a GTID source is to be excluded;
      *          may be null if not needed
@@ -99,7 +99,19 @@ public class MySqlSchema extends RelationalDatabaseSchema {
 
         this.filters = new Filters(config);
 
-        this.ddlParser = configuration.getDdlParsingMode().getNewParserInstance(getValueConverters(config));
+        // Do not remove the prefix from the subset of config properties ...
+        String connectorName = config.getString("name", configuration.getLogicalName());
+        Configuration dbHistoryConfig = config.subset(DatabaseHistory.CONFIGURATION_FIELD_PREFIX_STRING, false)
+                                              .edit()
+                                              .withDefault(DatabaseHistory.NAME, connectorName + "-dbhistory")
+                                              .build();
+        this.skipUnparseableDDL = dbHistoryConfig.getBoolean(DatabaseHistory.SKIP_UNPARSEABLE_DDL_STATEMENTS);
+        this.storeOnlyMonitoredTablesDdl = dbHistoryConfig.getBoolean(DatabaseHistory.STORE_ONLY_MONITORED_TABLES_DDL);
+
+        this.ddlParser = configuration.getDdlParsingMode().getNewParserInstance(
+                getValueConverters(config),
+                storeOnlyMonitoredTablesDdl ? getTableFilter() : TableFilter.includeAll()
+        );
         this.ddlChanges = this.ddlParser.getDdlChanges();
 
         // Create and configure the database history ...
@@ -108,12 +120,6 @@ public class MySqlSchema extends RelationalDatabaseSchema {
             throw new ConnectException("Unable to instantiate the database history class " +
                     config.getString(MySqlConnectorConfig.DATABASE_HISTORY));
         }
-        // Do not remove the prefix from the subset of config properties ...
-        String connectorName = config.getString("name", configuration.getLogicalName());
-        Configuration dbHistoryConfig = config.subset(DatabaseHistory.CONFIGURATION_FIELD_PREFIX_STRING, false)
-                                              .edit()
-                                              .withDefault(DatabaseHistory.NAME, connectorName + "-dbhistory")
-                                              .build();
 
         // Set up a history record comparator that uses the GTID filter ...
         this.historyComparator = new HistoryRecordComparator() {
@@ -124,8 +130,6 @@ public class MySqlSchema extends RelationalDatabaseSchema {
         };
         this.dbHistory.configure(dbHistoryConfig, historyComparator); // validates
 
-        this.skipUnparseableDDL = dbHistoryConfig.getBoolean(DatabaseHistory.SKIP_UNPARSEABLE_DDL_STATEMENTS);
-        this.storeOnlyMonitoredTablesDdl = dbHistoryConfig.getBoolean(DatabaseHistory.STORE_ONLY_MONITORED_TABLES_DDL);
     }
 
     private static MySqlValueConverters getValueConverters(Configuration config) {

@@ -7,10 +7,9 @@ package io.debezium.connector.postgresql;
 
 import static org.fest.assertions.Assertions.assertThat;
 
+import io.debezium.relational.TableId;
 import org.junit.Before;
 import org.junit.Test;
-
-import io.debezium.connector.AbstractSourceInfo;
 
 /**
  * @author Jiri Pechanec
@@ -22,11 +21,17 @@ public class SourceInfoTest {
 
     @Before
     public void beforeEach() {
-        source = new SourceInfo("serverX");
+        source = new SourceInfo("serverX", "databaseX");
+        source.update(1L, new TableId("catalogNameX", "schemaNameX", "tableNameX"));
     }
 
     @Test
     public void versionIsPresent() {
-        assertThat(source.source().getString(AbstractSourceInfo.DEBEZIUM_VERSION_KEY)).isEqualTo(Module.version());
+        assertThat(source.source().getString(SourceInfo.DEBEZIUM_VERSION_KEY)).isEqualTo(Module.version());
+    }
+
+    @Test
+    public void connectorIsPresent() {
+        assertThat(source.source().getString(SourceInfo.DEBEZIUM_CONNECTOR_KEY)).isEqualTo(Module.name());
     }
 }

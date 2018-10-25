@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
@@ -38,6 +39,7 @@ import io.debezium.doc.FixFor;
 import io.debezium.heartbeat.Heartbeat;
 import io.debezium.junit.ConditionalFail;
 import io.debezium.junit.ShouldFailWhen;
+import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.schema.TopicSelector;
 
@@ -68,7 +70,8 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
                 "INSERT INTO test_table(text) VALUES ('insert');";
         TestHelper.execute(statements);
         PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
-                .with(PostgresConnectorConfig.INCLUDE_UNKNOWN_DATATYPES, true)
+                .with(PostgresConnectorConfig.INCLUDE_UNKNOWN_DATATYPES, false)
+                .with(PostgresConnectorConfig.SCHEMA_BLACKLIST, "postgis")
                 .build());
         setupRecordsProducer(config);
     }
@@ -121,10 +124,23 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
         // timezone range types
         consumer.expects(1);
         assertInsert(INSERT_TSTZRANGE_TYPES_STMT, schemaAndValuesForTstzRangeTypes());
+    }
+
+    @Test
+    public void shouldReceiveChangesForInsertsCustomTypes() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.INCLUDE_UNKNOWN_DATATYPES, true)
+                .with(PostgresConnectorConfig.SCHEMA_BLACKLIST, "postgis")
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
 
         // custom types + null value
-        consumer.expects(1);
         assertInsert(INSERT_CUSTOM_TYPES_STMT, schemasAndValuesForCustomTypes());
+
     }
 
     @Test(timeout = 30000)
@@ -600,6 +616,118 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
     }
 
     @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithSingleValueAsMap() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.MAP)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_STMT, schemaAndValueFieldForMapEncodedHStoreType());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithMultipleValuesAsMap() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.MAP)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_WITH_MULTIPLE_VALUES_STMT, schemaAndValueFieldForMapEncodedHStoreTypeWithMultipleValues());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithNullValuesAsMap() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.MAP)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer,blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_WITH_NULL_VALUES_STMT, schemaAndValueFieldForMapEncodedHStoreTypeWithNullValues());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithSpecialCharactersInValuesAsMap() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.MAP)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_WITH_SPECIAL_CHAR_STMT, schemaAndValueFieldForMapEncodedHStoreTypeWithSpecialCharacters());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeAsJsonString() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.JSON)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_STMT, schemaAndValueFieldForJsonEncodedHStoreType());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithMultipleValuesAsJsonString() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.JSON)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_WITH_MULTIPLE_VALUES_STMT, schemaAndValueFieldForJsonEncodedHStoreTypeWithMultipleValues());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithSpecialValuesInJsonString() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.JSON)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_WITH_SPECIAL_CHAR_STMT, schemaAndValueFieldForJsonEncodedHStoreTypeWithSpcialCharacters());
+    }
+
+    @Test
+    @FixFor("DBZ-898")
+    public void shouldReceiveHStoreTypeWithNullValuesAsJsonString() throws Exception {
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.HSTORE_HANDLING_MODE,PostgresConnectorConfig.HStoreHandlingMode.JSON)
+                .build());
+        setupRecordsProducer(config);
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+
+        assertInsert(INSERT_HSTORE_TYPE_WITH_NULL_VALUES_STMT, schemaAndValueFieldForJsonEncodedHStoreTypeWithNullValues());
+    }
+
+    @Test
     @FixFor("DBZ-259")
     public void shouldProcessIntervalDelete() throws Exception {
         final String statements =
@@ -692,6 +820,43 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
         assertThat(consumer.isEmpty()).isTrue();
     }
 
+    @Test
+    @FixFor("DBZ-911")
+    public void shouldNotRefreshSchemaOnUnchangedToastedData() throws Exception {
+        // the low heartbeat interval should make sure that a heartbeat message is emitted after each change record
+        // received from Postgres
+        PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.SCHEMA_REFRESH_MODE, PostgresConnectorConfig.SchemaRefreshMode.COLUMNS_DIFF_EXCLUDE_UNCHANGED_TOAST)
+                .build());
+        setupRecordsProducer(config);
+
+        String toastedValue = RandomStringUtils.randomAlphanumeric(10000);
+
+        // inserting a toasted value should /always/ produce a correct record
+        String statement = "ALTER TABLE test_table ADD COLUMN not_toast integer; INSERT INTO test_table (not_toast, text) values (10, '" + toastedValue + "')";
+        consumer = testConsumer(1);
+        recordsProducer.start(consumer, blackHole);
+        executeAndWait(statement);
+
+        SourceRecord record = consumer.remove();
+
+        // after record should contain the toasted value
+        List<SchemaAndValueField> expectedAfter = Arrays.asList(
+                new SchemaAndValueField("not_toast", SchemaBuilder.OPTIONAL_INT32_SCHEMA, 10),
+                new SchemaAndValueField("text", SchemaBuilder.OPTIONAL_STRING_SCHEMA, toastedValue)
+        );
+        assertRecordSchemaAndValues(expectedAfter, record, Envelope.FieldName.AFTER);
+
+        // now we remove the toast column and update the not_toast column to see that our unchanged toast data
+        // does not trigger a table schema refresh. the after schema should look the same as before.
+        statement = "ALTER TABLE test_table DROP COLUMN text; update test_table set not_toast = 5 where not_toast = 10";
+
+        consumer.expects(1);
+        executeAndWait(statement);
+        Table tbl = recordsProducer.schema().tableFor(TableId.parse("public.test_table"));
+        assertEquals(Arrays.asList("pk", "text", "not_toast"), tbl.columnNames());
+    }
+
     private void assertHeartBeatRecordInserted() {
         assertFalse("records not generated", consumer.isEmpty());
 
@@ -711,10 +876,10 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
 
         PostgresTaskContext context = new PostgresTaskContext(
                 config,
-                new PostgresSchema(config, TestHelper.getTypeRegistry(), selector),
+                TestHelper.getSchema(config),
                 selector
         );
-        recordsProducer = new RecordsStreamProducer(context, new SourceInfo(config.getLogicalName()));
+        recordsProducer = new RecordsStreamProducer(context, new SourceInfo(config.getLogicalName(), config.databaseName()));
     }
 
     private void assertInsert(String statement, List<SchemaAndValueField> expectedSchemaAndValuesByColumn) {
@@ -724,12 +889,16 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
     private void assertInsert(String statement, int pk, List<SchemaAndValueField> expectedSchemaAndValuesByColumn) {
         TableId table = tableIdFromInsertStmt(statement);
         String expectedTopicName = table.schema() + "." + table.table();
+        expectedTopicName = expectedTopicName.replaceAll("[ \"]", "_");
+
         try {
             executeAndWait(statement);
             SourceRecord record = assertRecordInserted(expectedTopicName, PK_FIELD, pk);
             assertRecordOffset(record, false, false);
+            assertSourceInfo(record, "postgres", table.schema(), table.table());
             assertRecordSchemaAndValues(expectedSchemaAndValuesByColumn, record, Envelope.FieldName.AFTER);
-        } catch (Exception e) {
+        }
+        catch (Exception e) {
             throw new RuntimeException(e);
         }
     }

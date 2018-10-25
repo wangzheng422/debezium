@@ -10,9 +10,11 @@ Ben Williams
 Brandon Maguire
 Chris Riccomini
 Christian Posta
+Cliff Wheadon
 David Chen
 David Leibovic
 David Szabo
+Deepak Barr
 Denis Mikhaylov
 Dennis Persson
 Duncan Sands
@@ -23,6 +25,7 @@ Ewen Cheslack-Postava
 Gunnar Morling
 Henryk Konsek
 Horia Chiorean
+Ian Axelrod
 Ivan Vucina
 Jiri Pechanec
 Jure Kajzer
@@ -35,8 +38,10 @@ Matteo Capitanio
 Matthias Wessendorf
 Olavi Mustanoja
 Omar Al-Safi
+Ori Popowski
 Orr Ganani
 Peter Goransson
+Philip Sanetra
 Prannoy Mittal
 Raf Liwoch
 Ramesh Reddy
@@ -56,3 +61,4 @@ Steven Siahetiong
 Tom Bentley
 WenZe Hu
 Willie Cheong
+Muhammad Sufyian

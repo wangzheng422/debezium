@@ -47,7 +47,10 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
 
     @Override
     public void enterAlterTable(MySqlParser.AlterTableContext ctx) {
-        TableId tableId = parser.parseQualifiedTableId(ctx.tableName().fullId());
+        final TableId tableId = parser.parseQualifiedTableId(ctx.tableName().fullId());
+        if (!parser.getTableFilter().isIncluded(tableId)) {
+            return;
+        }
         tableEditor = parser.databaseTables().editTable(tableId);
         if (tableEditor == null) {
             throw new ParsingException(null, "Trying to alter table " + tableId.toString()
@@ -91,6 +94,7 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
                 String afterColumn = parser.parseName(ctx.uid(1));
                 tableEditor.reorderColumn(columnName, afterColumn);
             }
+            listeners.remove(columnDefinitionListener);
         }, tableEditor, columnDefinitionListener);
         super.exitAlterByAddColumn(ctx);
     }
@@ -122,6 +126,7 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
                 else {
                     // all columns parsed
                     // reset global variables for next parsed statement
+                    columnEditors.forEach(columnEditor -> tableEditor.addColumn(columnEditor.create()));
                     columnEditors = null;
                     parsingColumnIndex = STARTING_INDEX;
                 }
@@ -134,6 +139,7 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
     public void exitAlterByAddColumns(MySqlParser.AlterByAddColumnsContext ctx) {
         parser.runIfNotNull(() -> {
             columnEditors.forEach(columnEditor -> tableEditor.addColumn(columnEditor.create()));
+            listeners.remove(columnDefinitionListener);
         }, tableEditor, columnEditors);
         super.exitAlterByAddColumns(ctx);
     }
@@ -179,6 +185,7 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
             else if (ctx.afterColumn != null) {
                 tableEditor.reorderColumn(newColumnName, parser.parseName(ctx.afterColumn));
             }
+            listeners.remove(columnDefinitionListener);
         }, tableEditor, columnDefinitionListener);
         super.exitAlterByChangeColumn(ctx);
     }
@@ -213,6 +220,7 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
                 String afterColumn = parser.parseName(ctx.uid(1));
                 tableEditor.reorderColumn(column.name(), afterColumn);
             }
+            listeners.remove(columnDefinitionListener);
         }, tableEditor, columnDefinitionListener);
         super.exitAlterByModifyColumn(ctx);
     }
@@ -274,5 +282,44 @@ public class AlterTableParserListener extends MySqlParserBaseListener {
             }
         }, tableEditor);
         super.enterAlterByAddUniqueKey(ctx);
+    }
+
+    @Override
+    public void enterAlterByRenameColumn(MySqlParser.AlterByRenameColumnContext ctx) {
+        parser.runIfNotNull(() -> {
+            String oldColumnName = parser.parseName(ctx.oldColumn);
+            Column existingColumn = tableEditor.columnWithName(oldColumnName);
+            if (existingColumn != null) {
+                // DBZ-771 unset previously set default value, as it's not kept by MySQL; for any column modifications a new
+                // default value (which could be the same) has to be provided by the column_definition which we'll parse later
+                // on; only in 8.0 (not yet supported by this parser) columns can be renamed without repeating the full column
+                // definition; so in fact it's arguably not correct to use edit() on the existing column to begin with, but
+                // I'm going to leave this as is for now, to be prepared for the ability of updating column definitions in 8.0
+                ColumnEditor columnEditor = existingColumn.edit();
+//                columnEditor.unsetDefaultValue();
+
+                columnDefinitionListener = new ColumnDefinitionParserListener(tableEditor, columnEditor, parser.dataTypeResolver(), parser.getConverters());
+                listeners.add(columnDefinitionListener);
+            }
+            else {
+                throw new ParsingException(null, "Trying to change column " + oldColumnName + " in "
+                        + tableEditor.tableId().toString() + " table, which does not exist. Query: " + getText(ctx));
+            }
+        }, tableEditor);
+        super.enterAlterByRenameColumn(ctx);
+    }
+
+    @Override
+    public void exitAlterByRenameColumn(MySqlParser.AlterByRenameColumnContext ctx) {
+        parser.runIfNotNull(() -> {
+            Column column = columnDefinitionListener.getColumn();
+            tableEditor.addColumn(column);
+            String newColumnName = parser.parseName(ctx.newColumn);
+            if (newColumnName != null && !column.name().equalsIgnoreCase(newColumnName)) {
+                tableEditor.renameColumn(column.name(), newColumnName);
+            }
+            listeners.remove(columnDefinitionListener);
+        }, tableEditor, columnDefinitionListener);
+        super.exitAlterByRenameColumn(ctx);
     }
 }

@@ -25,6 +25,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -88,8 +89,8 @@ public abstract class AbstractRecordsProducerTest {
     protected static final String INSERT_TEXT_TYPES_STMT = "INSERT INTO text_table(j, jb, x, u) " +
                                                            "VALUES ('{\"bar\": \"baz\"}'::json, '{\"bar\": \"baz\"}'::jsonb, " +
                                                            "'<foo>bar</foo><foo>bar</foo>'::xml, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::UUID)";
-    protected static final String INSERT_STRING_TYPES_STMT = "INSERT INTO string_table (vc, vcv, ch, c, t, b, bnn) " +
-                                                             "VALUES ('\u017E\u0161', 'bb', 'cdef', 'abc', 'some text', E'\\\\000\\\\001\\\\002'::bytea, E'\\\\003\\\\004\\\\005'::bytea)";
+    protected static final String INSERT_STRING_TYPES_STMT = "INSERT INTO string_table (vc, vcv, ch, c, t, b, bnn, ct) " +
+                                                             "VALUES ('\u017E\u0161', 'bb', 'cdef', 'abc', 'some text', E'\\\\000\\\\001\\\\002'::bytea, E'\\\\003\\\\004\\\\005'::bytea, 'Hello World')";
     protected static final String INSERT_NUMERIC_TYPES_STMT =
             "INSERT INTO numeric_table (si, i, bi, r, db, r_int, db_int, r_nan, db_nan, r_pinf, db_pinf, r_ninf, db_ninf, ss, bs, b) " +
              "VALUES (1, 123456, 1234567890123, 3.3, 4.44, 3, 4, 'NaN', 'NaN', 'Infinity', 'Infinity', '-Infinity', '-Infinity', 1, 123, true)";
@@ -135,8 +136,16 @@ public abstract class AbstractRecordsProducerTest {
     protected static final String INSERT_QUOTED_TYPES_STMT = "INSERT INTO \"Quoted_\"\" . Schema\".\"Quoted_\"\" . Table\" (\"Quoted_\"\" . Text_Column\") " +
                                                              "VALUES ('some text')";
 
-    protected static final String INSERT_CUSTOM_TYPES_STMT = "INSERT INTO custom_table (lt, i, n, ct) " +
-            "VALUES ('Top.Collections.Pictures.Astronomy.Galaxies', '978-0-393-04002-9', NULL, 'Hello World')";
+    protected static final String INSERT_CUSTOM_TYPES_STMT = "INSERT INTO custom_table (lt, i, n) " +
+            "VALUES ('Top.Collections.Pictures.Astronomy.Galaxies', '978-0-393-04002-9', NULL)";
+
+    protected static final String INSERT_HSTORE_TYPE_STMT = "INSERT INTO hstore_table (hs) VALUES ('\"key\" => \"val\"'::hstore)";
+
+    protected static final String INSERT_HSTORE_TYPE_WITH_MULTIPLE_VALUES_STMT = "INSERT INTO hstore_table_mul (hs) VALUES ('\"key1\" => \"val1\",\"key2\" => \"val2\",\"key3\" => \"val3\"')";
+
+    protected static final String INSERT_HSTORE_TYPE_WITH_NULL_VALUES_STMT = "INSERT INTO hstore_table_with_null (hs) VALUES ('\"key1\" => \"val1\",\"key2\" => NULL')";
+
+    protected static final String INSERT_HSTORE_TYPE_WITH_SPECIAL_CHAR_STMT = "INSERT INTO hstore_table_with_special (hs) VALUES ('\"key_#1\" => \"val 1\",\"key 2\" =>\" ##123 78\"')";
 
     protected static final Set<String> ALL_STMTS = new HashSet<>(Arrays.asList(INSERT_NUMERIC_TYPES_STMT, INSERT_NUMERIC_DECIMAL_TYPES_STMT_NO_NAN,
                                                                  INSERT_DATE_TIME_TYPES_STMT,
@@ -247,6 +256,63 @@ public abstract class AbstractRecordsProducerTest {
         return fields;
     }
 
+    protected List<SchemaAndValueField> schemaAndValueFieldForMapEncodedHStoreType(){
+         final Map<String,String> expected = new HashMap<>();
+         expected.put("key", "val");
+        return Arrays.asList(new SchemaAndValueField("hs", hstoreMapSchema(), expected));
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForMapEncodedHStoreTypeWithMultipleValues(){
+        final Map<String,String> expected = new HashMap<>();
+        expected.put("key1", "val1");
+        expected.put("key2", "val2");
+        expected.put("key3", "val3");
+        return Arrays.asList(new SchemaAndValueField("hs", hstoreMapSchema(), expected));
+        }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForMapEncodedHStoreTypeWithNullValues(){
+        final Map<String,String> expected = new HashMap<>();
+        expected.put("key1", "val1");
+        expected.put("key2", null);
+        return Arrays.asList(new SchemaAndValueField("hs", hstoreMapSchema(), expected));
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForMapEncodedHStoreTypeWithSpecialCharacters(){
+        final Map<String,String> expected = new HashMap<>();
+        expected.put("key_#1", "val 1");
+        expected.put("key 2", " ##123 78");
+        return Arrays.asList(new SchemaAndValueField("hs", hstoreMapSchema(), expected));
+    }
+
+    private Schema hstoreMapSchema() {
+        return SchemaBuilder.map(
+                Schema.STRING_SCHEMA,
+                SchemaBuilder.string().optional().build()
+                )
+                .optional()
+                .build();
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForJsonEncodedHStoreType(){
+        final String expected = "{\"key\":\"val\"}";
+        return Arrays.asList(new SchemaAndValueField("hs", Json.builder().optional().build(), expected));
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForJsonEncodedHStoreTypeWithMultipleValues(){
+        final String expected = "{\"key1\":\"val1\",\"key2\":\"val2\",\"key3\":\"val3\"}";
+        return Arrays.asList(new SchemaAndValueField("hs", Json.builder().optional().build(), expected));
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForJsonEncodedHStoreTypeWithNullValues(){
+        final String expected = "{\"key1\":\"val1\",\"key2\":null}";
+        return Arrays.asList(new SchemaAndValueField("hs", Json.builder().optional().build(), expected));
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueFieldForJsonEncodedHStoreTypeWithSpcialCharacters(){
+        final String expected = "{\"key_#1\":\"val 1\",\"key 2\":\" ##123 78\"}";
+        return Arrays.asList(new SchemaAndValueField("hs", Json.builder().optional().build(), expected));
+    }
+
     protected List<SchemaAndValueField> schemasAndValuesForStringTypes() {
        return Arrays.asList(new SchemaAndValueField("vc", Schema.OPTIONAL_STRING_SCHEMA, "\u017E\u0161"),
                             new SchemaAndValueField("vcv", Schema.OPTIONAL_STRING_SCHEMA, "bb"),
@@ -254,7 +320,8 @@ public abstract class AbstractRecordsProducerTest {
                             new SchemaAndValueField("c", Schema.OPTIONAL_STRING_SCHEMA, "abc"),
                             new SchemaAndValueField("t", Schema.OPTIONAL_STRING_SCHEMA, "some text"),
                             new SchemaAndValueField("b", Schema.OPTIONAL_BYTES_SCHEMA, ByteBuffer.wrap(new byte[] {0, 1, 2})),
-                            new SchemaAndValueField("bnn", Schema.BYTES_SCHEMA, ByteBuffer.wrap(new byte[] {3, 4, 5}))
+                            new SchemaAndValueField("bnn", Schema.BYTES_SCHEMA, ByteBuffer.wrap(new byte[] {3, 4, 5})),
+                            new SchemaAndValueField("ct", Schema.OPTIONAL_STRING_SCHEMA, "Hello World")
                );
     }
 
@@ -461,18 +528,18 @@ public abstract class AbstractRecordsProducerTest {
        return Arrays.asList(new SchemaAndValueField("Quoted_\" . Text_Column", Schema.OPTIONAL_STRING_SCHEMA, "some text"));
     }
 
-    protected Map<String, List<SchemaAndValueField>> schemaAndValuesByTableName() {
-        return ALL_STMTS.stream().collect(Collectors.toMap(AbstractRecordsProducerTest::tableNameFromInsertStmt,
+    protected Map<String, List<SchemaAndValueField>> schemaAndValuesByTopicName() {
+        return ALL_STMTS.stream().collect(Collectors.toMap(AbstractRecordsProducerTest::topicNameFromInsertStmt,
                                                            this::schemasAndValuesForTable));
     }
 
-    protected Map<String, List<SchemaAndValueField>> schemaAndValuesByTableNameAdaptiveTimeMicroseconds() {
-        return ALL_STMTS.stream().collect(Collectors.toMap(AbstractRecordsProducerTest::tableNameFromInsertStmt,
+    protected Map<String, List<SchemaAndValueField>> schemaAndValuesByTopicNameAdaptiveTimeMicroseconds() {
+        return ALL_STMTS.stream().collect(Collectors.toMap(AbstractRecordsProducerTest::topicNameFromInsertStmt,
                 this::schemasAndValuesForTableAdaptiveTimeMicroseconds));
     }
 
-    protected Map<String, List<SchemaAndValueField>> schemaAndValuesByTableNameStringEncodedDecimals() {
-        return ALL_STMTS.stream().collect(Collectors.toMap(AbstractRecordsProducerTest::tableNameFromInsertStmt,
+    protected Map<String, List<SchemaAndValueField>> schemaAndValuesByTopicNameStringEncodedDecimals() {
+        return ALL_STMTS.stream().collect(Collectors.toMap(AbstractRecordsProducerTest::topicNameFromInsertStmt,
                 this::schemasAndValuesForNumericTypesUsingStringEncoding));
     }
 
@@ -493,8 +560,7 @@ public abstract class AbstractRecordsProducerTest {
     protected List<SchemaAndValueField> schemasAndValuesForCustomTypes() {
         return Arrays.asList(new SchemaAndValueField("lt", Schema.OPTIONAL_BYTES_SCHEMA, ByteBuffer.wrap("Top.Collections.Pictures.Astronomy.Galaxies".getBytes())),
                              new SchemaAndValueField("i", Schema.OPTIONAL_BYTES_SCHEMA, ByteBuffer.wrap("0-393-04002-X".getBytes())),
-                             new SchemaAndValueField("n", Schema.OPTIONAL_STRING_SCHEMA, null),
-                             new SchemaAndValueField("ct", Schema.OPTIONAL_STRING_SCHEMA, "Hello World"));
+                             new SchemaAndValueField("n", Schema.OPTIONAL_STRING_SCHEMA, null));
 
     }
 
@@ -538,7 +604,10 @@ public abstract class AbstractRecordsProducerTest {
                                                String envelopeFieldName) {
         Struct content = ((Struct) record.value()).getStruct(envelopeFieldName);
         assertNotNull("expected there to be content in Envelope under " + envelopeFieldName, content);
-        expectedSchemaAndValuesByColumn.forEach(schemaAndValueField -> schemaAndValueField.assertFor(content));
+
+        expectedSchemaAndValuesByColumn.forEach(
+                schemaAndValueField -> schemaAndValueField.assertFor(content)
+        );
     }
 
     protected void assertRecordOffset(SourceRecord record, boolean expectSnapshot, boolean expectedLastSnapshotRecord) {
@@ -551,14 +620,32 @@ public abstract class AbstractRecordsProducerTest {
         if (expectSnapshot) {
             Assert.assertTrue("Snapshot marker expected but not found", (Boolean) snapshot);
             assertEquals("Last snapshot record marker mismatch", expectedLastSnapshotRecord, lastSnapshotRecord);
-        } else {
+        }
+        else {
             assertNull("Snapshot marker not expected, but found", snapshot);
             assertNull("Last snapshot marker not expected, but found", lastSnapshotRecord);
         }
     }
 
-    protected static String tableNameFromInsertStmt(String statement) {
-        return tableIdFromInsertStmt(statement).toString();
+    protected void assertSourceInfo(SourceRecord record, String db, String schema, String table) {
+        assertTrue(record.value() instanceof Struct);
+        Struct source = ((Struct) record.value()).getStruct("source");
+        assertEquals(db, source.getString("db"));
+        assertEquals(schema, source.getString("schema"));
+        assertEquals(table, source.getString("table"));
+    }
+
+    protected void assertSourceInfo(SourceRecord record) {
+        assertTrue(record.value() instanceof Struct);
+        Struct source = ((Struct) record.value()).getStruct("source");
+        assertNotNull(source.getString("db"));
+        assertNotNull(source.getString("schema"));
+        assertNotNull(source.getString("table"));
+    }
+
+    protected static String topicNameFromInsertStmt(String statement) {
+        String qualifiedTableNameName = tableIdFromInsertStmt(statement).toString();
+        return qualifiedTableNameName.replaceAll("[ \"]", "_");
     }
 
     protected static TableId tableIdFromInsertStmt(String statement) {
@@ -621,7 +708,7 @@ public abstract class AbstractRecordsProducerTest {
                 }
             }
             else {
-                assertEquals("Incorrect value type for " + fieldName, value.getClass(), actualValue.getClass());
+                assertEquals("Incorrect value type for " + fieldName, (value != null) ? value.getClass() : null, (actualValue != null) ? actualValue.getClass() : null);
             }
 
             if (actualValue instanceof byte[]) {
@@ -742,7 +829,7 @@ public abstract class AbstractRecordsProducerTest {
 
         protected void await(long timeout, TimeUnit unit) throws InterruptedException {
             if (!latch.await(timeout, unit)) {
-                fail("Consumer expected " + latch.getCount() + " records, but received " + records.size());
+                fail("Consumer is still expecting " + latch.getCount() + " records, as it received only " + records.size());
             }
         }
     }

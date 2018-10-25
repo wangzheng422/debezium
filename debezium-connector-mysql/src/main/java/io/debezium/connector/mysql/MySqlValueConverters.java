@@ -32,7 +32,7 @@ import org.apache.kafka.connect.source.SourceRecord;
 
 import com.github.shyiko.mysql.binlog.event.deserialization.AbstractRowsEventDataDeserializer;
 import com.github.shyiko.mysql.binlog.event.deserialization.json.JsonBinary;
-import com.mysql.jdbc.CharsetMapping;
+import com.mysql.cj.CharsetMapping;
 
 import io.debezium.annotation.Immutable;
 import io.debezium.connector.mysql.antlr.MySqlAntlrDdlParser;
@@ -334,6 +334,10 @@ public class MySqlValueConverters extends JdbcValueConverters {
         if (data instanceof byte[]) {
             // The BinlogReader sees these JSON values as binary encoded, so we use the binlog client library's utility
             // to parse MySQL's internal binary representation into a JSON string, using the standard formatter.
+
+            if (((byte[]) data).length == 0)
+                return column.isOptional() ? null : "{}";
+
             try {
                 String json = JsonBinary.parseAsString((byte[]) data);
                 return json;

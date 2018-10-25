@@ -30,9 +30,11 @@ import io.debezium.connector.mysql.antlr.listener.MySqlAntlrDdlParserListener;
 import io.debezium.ddl.parser.mysql.generated.MySqlLexer;
 import io.debezium.ddl.parser.mysql.generated.MySqlParser;
 import io.debezium.relational.Column;
+import io.debezium.relational.ColumnEditor;
 import io.debezium.relational.SystemVariables;
 import io.debezium.relational.TableEditor;
 import io.debezium.relational.TableId;
+import io.debezium.relational.Tables.TableFilter;
 
 /**
  * An ANTLR based parser for MySQL DDL statements.
@@ -43,23 +45,25 @@ public class MySqlAntlrDdlParser extends AntlrDdlParser<MySqlLexer, MySqlParser>
 
     private final ConcurrentMap<String, String> charsetNameForDatabase = new ConcurrentHashMap<>();
     private final MySqlValueConverters converters;
+    private final TableFilter tableFilter;
 
     public MySqlAntlrDdlParser() {
-        this(true);
+        this(null, TableFilter.includeAll());
     }
 
     public MySqlAntlrDdlParser(MySqlValueConverters converters) {
-        this(true, false, converters);
+        this(converters, TableFilter.includeAll());
     }
 
-    public MySqlAntlrDdlParser(boolean throwErrorsFromTreeWalk) {
-        this(throwErrorsFromTreeWalk, false, null);
+    public MySqlAntlrDdlParser(MySqlValueConverters converters, TableFilter tableFilter) {
+        this(true, false, converters, tableFilter);
     }
 
-    public MySqlAntlrDdlParser(boolean throwErrorsFromTreeWalk, boolean includeViews, MySqlValueConverters converters) {
+    protected MySqlAntlrDdlParser(boolean throwErrorsFromTreeWalk, boolean includeViews, MySqlValueConverters converters, TableFilter tableFilter) {
         super(throwErrorsFromTreeWalk, includeViews);
         systemVariables = new MySqlSystemVariables();
         this.converters = converters;
+        this.tableFilter = tableFilter;
     }
 
     @Override
@@ -248,7 +252,11 @@ public class MySqlAntlrDdlParser extends AntlrDdlParser<MySqlLexer, MySqlParser>
                     }
                     Column column = tableEditor.columnWithName(columnName);
                     if (column != null && column.isOptional()) {
-                        tableEditor.addColumn(column.edit().optional(false).create());
+                        final ColumnEditor ce = column.edit().optional(false);
+                        if (ce.hasDefaultValue() && ce.defaultValue() == null) {
+                            ce.unsetDefaultValue();
+                        }
+                        tableEditor.addColumn(ce.create());
                     }
                     return columnName;
                 })
@@ -309,4 +317,7 @@ public class MySqlAntlrDdlParser extends AntlrDdlParser<MySqlLexer, MySqlParser>
         return converters;
     }
 
+    public TableFilter getTableFilter() {
+        return tableFilter;
+    }
 }

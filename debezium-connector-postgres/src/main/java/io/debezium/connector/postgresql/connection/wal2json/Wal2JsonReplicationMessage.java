@@ -193,13 +193,16 @@ class Wal2JsonReplicationMessage implements ReplicationMessage {
             }
             return null;
         }
-
         switch (type.getName()) {
+
             // include all types from https://www.postgresql.org/docs/current/static/datatype.html#DATATYPE-TABLE
             // plus aliases from the shorter names produced by older wal2json
             case "boolean":
             case "bool":
                 return rawValue.asBoolean();
+
+            case "hstore":
+                return rawValue.asString();
 
             case "integer":
             case "int":
@@ -343,6 +346,7 @@ class Wal2JsonReplicationMessage implements ReplicationMessage {
             case "geography":
                 return rawValue.asString();
 
+            case "citext":
             case "bit":
             case "bit varying":
             case "varbit":
