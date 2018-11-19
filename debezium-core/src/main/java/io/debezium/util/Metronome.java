@@ -50,10 +50,11 @@ public interface Metronome {
 
             @Override
             public void pause() throws InterruptedException {
-                while (next > timeSystem.currentTimeInMillis()) {
-                        Thread.sleep(next - timeSystem.currentTimeInMillis());
-                }
-                next = next + periodInMillis;
+                // while (next > timeSystem.currentTimeInMillis()) {
+                //         Thread.sleep(next - timeSystem.currentTimeInMillis());
+                // }
+                // next = next + periodInMillis;
+                Thread.sleep(periodInMillis);
             }
 
             @Override
